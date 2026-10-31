@@ -1,0 +1,13 @@
+# Local Python runtime and generated metadata
+.python38/
+9DTact.egg-info/
+.idea/
+__pycache__/
+*.py[cod]
+
+# Locally collected data, analysis outputs, and trained checkpoints
+shape_reconstruction/results/
+saved_models/
+work-wheels/
+python38-embed-amd64.zip
+*.joblib
