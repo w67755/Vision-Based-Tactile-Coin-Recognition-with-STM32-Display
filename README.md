@@ -1,245 +1,164 @@
-# 9DTact
-### Feel free to use this open-source project for commercial purposes!
+# 基于视触觉传感的硬币面额识别与 STM32 OLED 显示
 
-# Table of contents
-1. [Overview](#overview)
-2. [Installation](#installation)
-3. [3D Shape Reconstruction](#reconstruction)
-   1. [Camera Calibration](#camera_calibration)
-   2. [Sensor Calibration](#sensor_calibration)
-   3. [Shape Reconstruction](#shape_reconstruction)
-4. [6D Force Estimation](#estimation)
-   1. [BOTA Driver](#bota)
-   2. [Data Collection](#collection)
-   3. [Data Processing](#processing)
-   4. [Model Training](#training)
-   5. [Force Estimation](#inference)
-5. [Run in ROS](#ros)
-   1. [Shape Reconstruction in ROS](#shape_ros)
-   2. [Force Estimation in ROS](#force_ros)
-   3. [Simultaneous Shape Reconstruction and Force Estimation (SSAF) in ROS](#shape_force)
-6. [DTact Series Papers](#papers)
+本项目以 [9DTact](https://github.com/linchangyi1/9DTact) 视觉触觉传感器开源项目为基础，面向课设实现硬币触觉采集、形貌分析、面额分类，并把识别结果通过串口发送给 STM32，在 OLED 上显示。
 
-## Overview <a name="overview"></a>
-**This repository contains the code and the hardware source files for the paper:**
+> 这是一个仍在开发和验证中的课设项目。实时识别、串口发送和 STM32 OLED 显示代码已经接入；不同硬币、不同位置和压力下的稳定性，以及整机串口链路，仍需要继续实测。交叉验证成绩不能代替独立样本测试。
 
-![](source/pipelie.png)
+## 项目流程
 
-<b>9DTact: A Compact Vision-Based Tactile Sensor for Accurate 3D Shape Reconstruction and Generalizable 6D Force Estimation</b> <br>
-[Changyi Lin](https://linchangyi1.github.io/),
-[Han Zhang](https://doublehan07.github.io/),
-Jikai Xu, Lei Wu, and
-[Huazhe Xu](http://hxu.rocks/) <br>
-RAL, 2023 <br>
-[Website](https://linchangyi1.github.io/9DTact/) /
-[Arxiv Paper](https://arxiv.org/abs/2308.14277) /
-[Video Tutorial](https://www.youtube.com/watch?v=-oRtW398JDY) /
-[Bom (CN)](https://docs.google.com/document/d/1d8c0Pbj_9otzWVxE94c6c-DW61ETBbJZIjVFKe4_OXI/edit?usp=sharing) /
-[Production](https://e.tb.cn/h.hJlaI3aoyO30DGk?tk=K9Vm4iYdHwj)
-
-
-
-## Installation <a name="installation"></a>
-#### Create a conda environment:
-```bash
-conda create -n 9dtact python=3.8
-```
-#### Install pytorch (choose the version that is compatible with your computer):
-```bash
-conda activate 9dtact
-conda install pytorch torchvision torchaudio pytorch-cuda=11.8 -c pytorch -c nvidia
-```
-#### In this repository, install the other requirements:
-```bash
-pip install -e .
+```mermaid
+flowchart LR
+    A[硬币按压自制触觉表面] --> B[彩色相机采集]
+    B --> C[灰度图与标定高度图]
+    C --> D[接触轮廓与局部高度特征]
+    D --> E[SVM 面额分类]
+    E -->|COIN,1Y / 5J / 1J 加换行| F[USB 转 TTL 串口]
+    F --> G[STM32 USART1]
+    G --> H[OLED 显示面额]
 ```
 
+相机是彩色相机；当前 9DTact 形状重建流程将相机帧转成灰度图，再根据参考帧和标定数据计算高度图。灰度图是中间输入，`DepthMap` 和 3D 点云才用于观察重建形貌。
 
-## 3D Shape Reconstruction <a name="reconstruction"></a>
-For all the terminals used in this section, they are located in the **shape_reconstruction** directory and based on the **9dtact** conda environment:
-```bash
+## 当前已完成
+
+- 使用自制触觉传感器和摄像头运行 9DTact 形状重建流程。
+- 采集程序支持选择训练集或验证集、选择硬币面额，并保存灰度图、带轮廓的深度图和高度矩阵。
+- 实时深度图叠加接触轮廓；显示路径加入 3×3 中值去噪、小连通区域清理及 5 帧时间中值平滑。平滑只用于显示，保存的高度 `.npy` 保留当前帧原始高度数据。
+- 高度图分析脚本递归读取类别目录，计算接触轮廓、尺寸、表面起伏和剖面等特征，并输出 CSV。
+- 分类器使用接触轮廓和局部浮雕高度特征，经标准化后用 RBF-SVM 训练；训练脚本输出分层交叉验证结果并保存模型。
+- 支持单张高度图预测，以及等待接触稳定后进行实时多数投票识别。
+- Python 实时识别脚本在结果达到投票阈值时发送串口数据；STM32 USART1 接收后按面额更新 OLED。
+
+## 目录说明
+
+```text
+shape_reconstruction/
+├── _1_Camera_Calibration.py       # 相机标定
+├── _2_Sensor_Calibration.py       # 传感器深度标定
+├── _3_Shape_Reconstruction.py     # 采集、二维/三维显示与数据保存
+├── analyze_height_maps.py         # 分析高度图并生成特征 CSV
+├── train_shape_classifier.py     # 训练面额分类器
+├── predict_coin.py                # 单张 .npy 离线预测
+├── recognize_coin_live.py         # 摄像头实时识别并通过串口发送
+├── camera.py / sensor.py          # 相机、传感器和高度图处理
+├── visualizer.py                  # Open3D 点云显示
+├── shape_config.yaml              # 相机和重建参数
+├── calibration/                   # 相机/传感器标定文件
+└── results/                       # 采集数据、CSV 和训练模型（本地生成）
+
+stm32/
+├── project.uvprojx                # Keil 工程
+├── User/main.c                    # 串口包解析结果与 OLED 显示
+└── Hardware/Serial.c              # USART1 初始化与接收中断
+```
+
+## 环境准备
+
+项目原始 9DTact 代码以 Python 3.8 为基准。Windows 下建议在 PyCharm 中选择 Python 3.8 解释器，并在该解释器的终端安装硬币识别所需依赖：
+
+```powershell
+python -m pip install numpy==1.23.5 opencv-python==4.8.0.76 PyYAML==6.0.1 open3d==0.13.0 scikit-learn==1.3.2 joblib pyserial
+```
+
+请确认 PyCharm 运行脚本使用的解释器与安装依赖的解释器相同。根目录的 `requirements.txt` 包含原项目的 ROS 依赖；在普通 Windows 硬币识别流程中不需要安装整份 ROS 依赖。
+
+本项目需要本机可用的相机标定和深度标定文件。`shape_reconstruction/shape_config.yaml` 中的 `camera_channel`、分辨率、标定目录等参数应按实际设备调整。首次搭建或更换相机/触觉表面后，应检查对焦与标定；不要用其他传感器的标定文件替代。
+
+## 数据采集与重建
+
+从项目根目录进入脚本目录：
+
+```powershell
 cd shape_reconstruction
-conda activate 9dtact
-```
-
-If you are using the **production** version of 9DTact, you do **not** need to calibrate the camera and sensor.
-Please proceed directly to Step 3 (Shape Reconstruction).
-
-### 1. Camera Calibration <a name="camera_calibration"></a>
-Before getting started, **adjust the camera focus** by rotating the lens until objects approximately 15 mm away appear clear.
-
-Then, 3d print the [calibration board](9DTact_Design/fabrication/calibration_board.STL).<br>
-Run:
-```bash
-python _1_Camera_Calibration.py
-```
-Just follow the printed instructions.
-
-### 2. Sensor Calibration <a name="sensor_calibration"></a>
-Firstly, prepare a ball with a radius of 4.0 mm.
-(The radius of the ball depends on the thickness of the sensor surface.
-4.0 mm is just a recommendation.)<br>
-Then, run:
-```bash
-python _2_Sensor_Calibration.py
-```
-Just follow the printed instructions.
-
-### 3. Shape Reconstruction <a name="shape_reconstruction"></a>
-```bash
 python _3_Shape_Reconstruction.py
 ```
-Press 'y' when the tactile image is stably captured, which will served as the reference image.
 
-## 6D Force Estimation <a name="estimation"></a>
-### 1. BOTA Driver <a name="bota"></a>
-**If you want to collect force data with a BOTA MiniONE Pro sensor, you need to:**<br>
-Create a directory named 'bota_ws' as the ROS workspace, and install the [bota driver package](https://gitlab.com/botasys/bota_driver).
+程序启动后按提示操作：
 
-### 2. Data Collection <a name="collection"></a>
-#### At the first terminal, open the BOTA sensor:
-```bash
-cd ~/xxx/bota_ws # Modify 'xxx' to enter the workspace directory
-source devel/setup.bash
-roslaunch rokubimini_serial rokubimini_serial.launch
-```
-#### At the second terminal, run:
-```bash
-source ~/xxx/bota_ws/devel/setup.bash
-cd data_collection
-conda activate 9dtact
-python collect_data.py
-```
-#### At the third terminal, open the 9DTact sensor:
-```bash
-cd shape-force-ros
-conda activate 9dtact
-python _1_Sensor_ros.py
+1. 传感器空载并稳定，在参考图窗口按 `y` 设置参考帧。
+2. 选择数据用途：`1` 为训练集，`2` 为独立验证集。
+3. 选择类别：`1` 为 `1角`，`2` 为 `1元`，`3` 为 `5角`。
+4. 硬币平整接触并保持稳定后，在 `RawImage_GRAY` 或 `DepthMap` 窗口按 `s` 保存；按 `q` 退出。
+
+数据分别保存到：
+
+```text
+shape_reconstruction/results/shape_dataset/<面额>/
+shape_reconstruction/results/shape_validation/<面额>/
 ```
 
-### 3. Data Processing <a name="processing"></a>
-#### Open a terminal, normalize the wrench:
-```bash
-cd data_collection
-conda activate 9dtact
-python wrench_normalization.py  # remember to modify the object_num
-```
-#### At the same terminal, split the data by running:
-```bash
-python split_train_test.py
-```
-and also:
-```bash
-python split_train_test(objects).py
+每次采集会生成：
+
+- `*_gray.png`：相机灰度帧。
+- `*_depth.png`：显示用深度图，包含红色接触轮廓。
+- `*_height.npy`：高度矩阵原始数据，供分析、训练或预测使用。
+
+采集时应让类别目录与真实面额一致。训练样本和验证样本分开放置；验证集不要用于训练。
+
+## 分析和训练
+
+完成或补充训练集采集后，在 `shape_reconstruction` 目录依次运行：
+
+```powershell
+python analyze_height_maps.py
+python train_shape_classifier.py
 ```
 
-### 4. Model Training <a name="training"></a>
-To train the model on the stadard training dataset, run:
-```bash
-cd force_estimation
-python train.py --model_name="Densenet" --model_layer=169 --optimizer="ADAM" --lrs=False --image_type="RGB" --cuda_index=6 --resize_img=False --train_mode=True --test_object=False --mixed_image=True --pretrained=False --batch_size=64 --num_epoch=200 --learning_rate=5.0e-4 --weight_decay=0.0
-```
-You may also choose to use [Weights and Bias (wandb)](https://docs.wandb.ai/quickstart) by setting use_wandb as True,
-which helps to track the training performance.
+分析脚本递归读取 `results/shape_dataset/` 下各类别的 `*_height.npy`，并生成带类别标签的 `results/shape_dataset/shape_height_features.csv`。分类器从高度矩阵重新提取轮廓和局部浮雕特征，使用分层交叉验证评估，并把最终模型保存为：
 
-### 5. Force Estimation <a name="inference"></a>
-You need to specify a model saved in the 'saved_models' directory as an estimator,
-by modifying the 'weights' parameters in the [force_config.yaml](force_estimation/force_config.yaml).<br>
-After that, run:
-```bash
-cd force_estimation
-python _1_Force_Estimation.py
+```text
+results/shape_dataset/shape_classifier.joblib
 ```
 
+每次训练集新增、删除或改名后，都要重新运行分析脚本和训练脚本。交叉验证只评估当前数据；同一枚硬币的连续按压样本很相似时，成绩可能偏高。应使用未参与训练、最好是重新放置或另一枚硬币采集的验证样本检查泛化效果。
 
-## Run in ROS <a name="ros"></a>
-### 1. Shape Reconstruction in ROS <a name="shape_ros"></a>
-#### At the first terminal, open the 9DTact sensor:
-```bash
-cd shape-force_ros
-conda activate 9dtact
-python _1_Sensor_ros.py
-```
-#### At the second terminal, run:
-```bash
-cd shape-force_ros
-conda activate 9dtact
-python _2_Shape_Reconstruction_ros.py
+## 离线与实时识别
+
+### 单张高度图预测
+
+```powershell
+python predict_coin.py
 ```
 
-### 2. Force Estimation in ROS <a name="force_ros"></a>
-#### At the first terminal, open the 9DTact sensor:
-```bash
-cd shape-force_ros
-conda activate 9dtact
-python _1_Sensor_ros.py
-```
-#### At the second terminal, run:
-```bash
-cd shape-force_ros
-conda activate 9dtact
-python _3_Force_Estimation_ros.py
-```
-#### (Optional for visualization) At the third terminal, open the visualization window:
-```bash
-cd force_estimation
-conda activate 9dtact
-python force_visualizer.py
-```
-### 3. Simultaneous Shape Reconstruction and Force Estimation (SSAF) in ROS <a name="shape_force"></a>
-#### At the first terminal, open the force estimator:
-```bash
-cd shape-force_ros
-conda activate 9dtact
-python _3_Force_Estimation_ros.py
-```
-#### At the second terminal, run:
-```bash
-cd shape-force_ros
-conda activate 9dtact
-python _4_Shape_Force_ros.py
-```
-## DTact Series Papers <a name="papers"></a>
-- [DTact: A Vision-Based Tactile Sensor that Measures High-Resolution 3D Geometry Directly from Darkness](https://arxiv.org/abs/2209.13916), Lin et al., ICRA 2023
-- [9DTact: A Compact Vision-Based Tactile Sensor for Accurate 3D Shape Reconstruction and Generalizable 6D Force Estimation](https://arxiv.org/abs/2308.14277), Lin et al., RAL 2023
-- [Design and Evaluation of a Rapid Monolithic Manufacturing Technique for a Novel Vision-Based Tactile Sensor: C-Sight](https://www.mdpi.com/1424-8220/24/14/4603), Fan et al., MDPI Sensors 2024
-- [DTactive: A Vision-Based Tactile Sensor with Active Surface](https://arxiv.org/abs/2410.08337), Xu et al., IROS 2025
-- [VET: A Visual-Electronic Tactile System for Immersive Human-Machine Interaction](https://arxiv.org/pdf/2503.23440), Zhang et al., arxiv 2025
-- [PP-Tac: Paper Picking Using Tactile Feedback in Dexterous Robotic Hands](https://arxiv.org/abs/2504.16649), Lin et al., RSS 2025
-- [AllTact Fin Ray: A Compliant Robot Gripper with Omni-Directional Tactile Sensing](https://arxiv.org/pdf/2504.18064), Liang et al., arxiv 2025
-- [SuperMag: Vision-based Tactile Data Guided High-resolution Tactile Shape Reconstruction for Magnetic Tactile Sensors](https://arxiv.org/pdf/2507.20002), Hou et al., IROS 2025
-- [UTact: Underwater Vision-Based Tactile Sensor with Geometry Reconstruction and Contact Force Estimation](https://advanced.onlinelibrary.wiley.com/doi/pdfdirect/10.1002/adrr.202500091), Zhang et al., Advanced Robotics Research 2025
-- [exUMI: Extensible Robot Teaching System with Action-aware Task-agnostic Tactile Representation](https://openreview.net/attachment?id=b86nyIOJWq&name=pdf), Xu et al., CoRL 2025
-- [TacScope: A Miniaturized Vision-Based Tactile Sensor for Surgical Applications](https://advanced.onlinelibrary.wiley.com/doi/10.1002/adrr.202500117), Prince et al., Advanced Robotics Research 2025
-- [Design and application of multimodal visual-tactile sensor for object information perception](https://www.sciencedirect.com/science/article/pii/S0924424726000804?via%3Dihub), Wang et al., Sensors and Actuators 2026
-- [A Low-Cost Vision-Based Tactile Gripper with Pretraining Learning for Contact-Rich Manipulation](https://arxiv.org/pdf/2602.00514), Liu et al., arxiv 2026
-- [SpikingTac: A Miniaturized Neuromorphic Visuotactile Sensor for High-Precision Dynamic Tactile Imprint Tracking](https://arxiv.org/pdf/2602.23654), Jiang et al., arxiv 2026
-- [Heterogeneous Tactile Transformer](https://arxiv.org/pdf/2606.29948), Bi et al., arxiv 2026
-- [ViHaTeleop: A Low-Cost, Lightweight Visual-Haptic Teleoperation System for Dexterous Manipulation Learning](https://arxiv.org/pdf/2608.16572), Zhu et al., arxiv 2026
+按提示输入一张未训练的 `*_height.npy` 文件路径。该脚本需要先存在匹配的 `shape_classifier.joblib`。
 
-## Reference
-```
-@inproceedings{lin2023dtact,
-  title={Dtact: A vision-based tactile sensor that measures high-resolution 3d geometry directly from darkness},
-  author={Lin, Changyi and Lin, Ziqi and Wang, Shaoxiong and Xu, Huazhe},
-  booktitle={2023 IEEE International Conference on Robotics and Automation (ICRA)},
-  pages={10359--10366},
-  year={2023},
-  organization={IEEE}
-}
-```
-```
-@article{lin20239dtact,
-  title={9dtact: A compact vision-based tactile sensor for accurate 3d shape reconstruction and generalizable 6d force estimation},
-  author={Lin, Changyi and Zhang, Han and Xu, Jikai and Wu, Lei and Xu, Huazhe},
-  journal={IEEE Robotics and Automation Letters},
-  volume={9},
-  number={2},
-  pages={923--930},
-  year={2023},
-  publisher={IEEE}
-}
+### 摄像头实时识别与串口发送
+
+先打开 `recognize_coin_live.py`，将串口配置行中的 `COM5` 改为 USB 转 TTL 模块在 Windows 设备管理器中的实际 COM 号。关闭占用该端口的串口助手，然后运行：
+
+```powershell
+python recognize_coin_live.py
 ```
 
+程序空载参考帧设置完成后，放上硬币并保持不动约 2 秒；随后取 15 帧投票，至少 10 帧一致时才输出并发送一次结果。结果不稳定时不会发送。松开硬币后可识别下一枚。
 
+## STM32 与 OLED 串口协议
 
+Keil 工程位于 `stm32/project.uvprojx`。当前代码使用 STM32F103C8 的 USART1，配置为 **9600 baud、8 数据位、无校验、1 停止位（9600 8N1）**：
+
+- STM32 `PA10 / USART1_RX` 接 USB 转 TTL 模块的 `TX`。
+- STM32 `GND` 与 USB 转 TTL 模块 `GND` 共地。
+- 使用 3.3 V TTL 电平；不要把相机 USB 设备当成 STM32 串口。
+- `PA9 / USART1_TX` 当前不是 Python 单向发送所必需的连接。
+
+Python 发送 ASCII 文本包，末尾为换行符 `\n`：
+
+| 面额 | Python 发出的字节 | STM32 字符串匹配值 |
+|---|---|---|
+| 1 元 | `COIN,1Y\n` | `COIN,1Y` |
+| 5 角 | `COIN,5J\n` | `COIN,5J` |
+| 1 角 | `COIN,1J\n` | `COIN,1J` |
+
+STM32 接收中断在收到 `\n` 后完成数据包，主循环按字符串匹配并调用 OLED 显示。串口端到端是否成功，仍需在实际 USB 转 TTL、STM32 和 OLED 硬件上验证。
+
+## 已知限制与后续工作
+
+- 自制黑色胶层的厚度、硬度、弹性和光学性质会影响浅浮雕形变；显示增强无法恢复传感器没有采到的细节。
+- 手动按压力度、位置、倾斜和硬币正反面会带来变化，需要用多次独立放置的样本验证。
+- 当前模型样本量有限，特别要关注 1 角与其他面额的混淆；报告中的交叉验证准确率不等于真实部署准确率。
+- 当前 STM32 OLED 文字为英文简写；中文字体、结果置信度/无效包处理以及完整串口稳定性仍可继续完善。
+- Git 忽略规则会排除本地 Python 环境、采集结果和模型文件。仓库当前包含 `sensor_1` 标定文件；新电脑上要先确认它与实际传感器匹配。采集数据和训练模型需自行重新生成或单独备份。
+
+## 上游项目与许可
+
+本项目基于 [9DTact 开源项目](https://github.com/linchangyi1/9DTact) 的相机、触觉重建和可视化代码进行课设扩展。请保留并遵守仓库现有 `LICENSE` 文件及上游项目的许可与署名要求。

@@ -6,16 +6,19 @@ train_shape_classifier.py 生成匹配的 shape_classifier.joblib。
 本脚本只识别，不保存采集数据。
 """
 
-from collections import Counter, deque
-from pathlib import Path
 import sys
 import time
+from collections import Counter, deque
+from pathlib import Path
 
 import cv2
 import joblib
 import numpy as np
 import yaml
+import serial
 
+# 【串口配置位置】把 COM5 改成设备管理器中 USB 转 TTL 模块的实际端口号。
+ser = serial.Serial("COM5", 9600, timeout=1)
 BASE_DIR = Path(__file__).resolve().parent
 # 同时加入项目根目录和本目录，兼容 PyCharm 工作目录设置。
 sys.path.insert(0, str(BASE_DIR.parent))
@@ -43,6 +46,13 @@ DISPLAY_NAMES = {
     "1元": "1 YUAN",
     "5角": "5 JIAO",
     "1角": "1 JIAO",
+}
+
+# 【数据包映射位置】左边必须与模型标签完全一致；右边需与 STM32 接收协议一致。
+COIN_PACKETS = {
+    "1元": b"COIN,1Y\n",
+    "5角": b"COIN,5J\n",
+    "1角": b"COIN,1J\n",
 }
 
 
@@ -140,6 +150,18 @@ def main():
                                     f"识别结果：{final_label}"
                                     f"（等待稳定后 {vote_count}/{VOTE_WINDOW} 帧一致）"
                                 )
+                                # 【发送位置】仅高一致性结果发送一次；低一致性时不发，避免把不确定结果显示到 OLED。
+                                packet = COIN_PACKETS.get(final_label)
+                                if packet is not None:
+                                    try:
+                                        ser.write(packet)
+                                        ser.flush()
+                                        print(
+                                            "已发送给 STM32："
+                                            f"{packet.decode('ascii').strip()}"
+                                        )
+                                    except serial.SerialException as error:
+                                        print(f"串口发送失败：{error}")
                             announced = True
 
                     if final_label:
@@ -180,6 +202,7 @@ def main():
                 break
     finally:
         sensor.cap.release()
+        ser.close()
         cv2.destroyAllWindows()
 
     return 0
