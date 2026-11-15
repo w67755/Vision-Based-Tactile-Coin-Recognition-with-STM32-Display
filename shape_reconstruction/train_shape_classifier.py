@@ -24,6 +24,8 @@ RESULTS_DIR = BASE_DIR / "results"
 DATASET_DIR = RESULTS_DIR / "shape_dataset"
 CSV_PATH = DATASET_DIR / "shape_height_features.csv"
 MODEL_PATH = DATASET_DIR / "shape_classifier.joblib"
+CV_PREDICTIONS_PATH = DATASET_DIR / "shape_cv_predictions.csv"
+CV_MISCLASSIFIED_PATH = DATASET_DIR / "shape_cv_misclassified.csv"
 CONTACT_THRESHOLD = 0.08
 RANDOM_STATE = 42
 RELIEF_GRID_SIZE = 4
@@ -114,7 +116,7 @@ def extract_shape_features(height_map):
         relative_height_spread,
     ], dtype=np.float64)
 
-    # 以最大接触轮廓的外接框为 ROI，抹去硬币在传感器画面中的绝对位置影响。
+    # 以最大接触轮廓的外接框为 ROI，减弱物体在传感器画面中的绝对位置影响。
     # 将高度按接触区域的 5%～95% 分位数归一化，降低整体按压深浅的影响。
     roi_height = filtered_map[y:y + height, x:x + width].astype(np.float64)
     roi_mask = mask[y:y + height, x:x + width].astype(bool)
@@ -206,6 +208,7 @@ def main():
 
     X_rows = []
     y_rows = []
+    sample_paths = []
     skipped = []
     for row in table:
         relative_path = Path(row["file"])
@@ -224,6 +227,7 @@ def main():
             continue
         X_rows.append(features)
         y_rows.append(str(row["class_label"]))
+        sample_paths.append(height_path.resolve())
 
     if skipped:
         print(f"\n跳过 {len(skipped)} 个无法使用的样本。")
@@ -259,6 +263,47 @@ def main():
     print(labels)
     print(confusion_matrix(y, predictions, labels=labels))
 
+    # 保存每个样本的折外预测，便于定位误判样本并查看对应原图。
+    prediction_rows = []
+    misclassified_rows = []
+    for height_path, true_label, predicted_label in zip(sample_paths, y, predictions):
+        height_path = Path(height_path)
+        row = {
+            "true_label": str(true_label),
+            "predicted_label": str(predicted_label),
+            "correct": str(true_label == predicted_label),
+            "height_path": str(height_path),
+            "gray_path": str(height_path.with_name(height_path.name.replace("_height.npy", "_gray.png"))),
+            "depth_path": str(height_path.with_name(height_path.name.replace("_height.npy", "_depth.png"))),
+        }
+        prediction_rows.append(row)
+        if true_label != predicted_label:
+            misclassified_rows.append(row)
+
+    prediction_fields = [
+        "true_label", "predicted_label", "correct",
+        "height_path", "gray_path", "depth_path",
+    ]
+    for output_path, rows in (
+        (CV_PREDICTIONS_PATH, prediction_rows),
+        (CV_MISCLASSIFIED_PATH, misclassified_rows),
+    ):
+        with output_path.open("w", newline="", encoding="utf-8-sig") as csv_file:
+            writer = csv.DictWriter(csv_file, fieldnames=prediction_fields)
+            writer.writeheader()
+            writer.writerows(rows)
+
+    print(f"\n逐样本交叉验证结果：{CV_PREDICTIONS_PATH}")
+    print(f"误判样本清单：{CV_MISCLASSIFIED_PATH}")
+    if misclassified_rows:
+        print("误判样本（真实类别 -> 预测类别）：")
+        for row in misclassified_rows:
+            print(f"  {row['true_label']} -> {row['predicted_label']}: {row['height_path']}")
+            print(f"    灰度图：{row['gray_path']}")
+            print(f"    深度图：{row['depth_path']}")
+    else:
+        print("本次交叉验证没有误判样本。")
+
     # 交叉验证只用于评估。保存的最终模型使用全部有效样本重新训练，
     # 供之后对新采集的高度图进行预测。
     model = make_pipeline(
@@ -278,7 +323,7 @@ def main():
         "classes": labels,
     }, MODEL_PATH)
     print(f"\n模型已保存到：{MODEL_PATH}")
-    print("注意：交叉验证只反映当前数据及采集条件；若同一硬币或相邻按压样本相似，结果可能偏乐观。")
+    print("注意：交叉验证只反映当前数据及采集条件；若同一物体或相邻按压样本相似，结果可能偏乐观。")
     print("保存的模型用全部有效样本训练，不能再用这批样本评估模型效果。")
     return 0
 

@@ -4,14 +4,31 @@ import numpy as np
 from collections import deque
 from pathlib import Path
 from datetime import datetime
+import sys
+
+BASE_DIR = Path(__file__).resolve().parent
+PROJECT_ROOT = BASE_DIR.parent
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+
 from shape_reconstruction import Sensor, Visualizer
 
 
-# 显示用去噪参数：与硬币分类特征提取所用阈值保持一致。
+# 显示用去噪参数：与形状分类特征提取所用阈值保持一致。
 DISPLAY_CONTACT_THRESHOLD = 0.08
 DISPLAY_MEDIAN_KERNEL = 3
 DISPLAY_MIN_COMPONENT_AREA = 20
 DISPLAY_TEMPORAL_WINDOW = 5  # 约 0.17 秒（相机 30 FPS），仅用于实时显示去闪烁。
+
+
+def save_png(path, image):
+    """用 imencode + tofile 保存 PNG，兼容 Windows 中文目录并检查写入结果。"""
+    success, encoded = cv2.imencode(".png", image)
+    if not success:
+        raise OSError(f"PNG 编码失败：{path}")
+    encoded.tofile(str(path))
+    if not path.is_file() or path.stat().st_size == 0:
+        raise OSError(f"PNG 保存失败：{path}")
 
 
 def clean_height_map_for_display(height_map):
@@ -44,8 +61,12 @@ def clean_height_map_for_display(height_map):
 
 
 if __name__ == '__main__':
-    f = open("shape_config.yaml", 'r+', encoding='utf-8')
-    cfg = yaml.load(f, Loader=yaml.FullLoader)
+    config_path = BASE_DIR / "shape_config.yaml"
+    with config_path.open("r", encoding="utf-8") as f:
+        cfg = yaml.load(f, Loader=yaml.FullLoader)
+    cfg["calibration_root_dir"] = str(
+        (BASE_DIR / cfg["calibration_root_dir"]).resolve()
+    ).replace("\\", "/")
     sensor = Sensor(cfg)
     visualizer = Visualizer(sensor.points)
 
@@ -64,13 +85,13 @@ if __name__ == '__main__':
             break
         print("输入无效，请输入 1 或 2。")
 
-    # 每次启动时选择本轮采集的面额类别。
+    # 每次启动时选择本轮采集的物体形状类别。
     shape_labels = {
-        "1": "1角",
-        "2": "1元",
-        "3": "5角",
+        "1": "球",
+        "2": "圆柱",
+        "3": "正方体",
     }
-    print("请选择本轮采集的面额类别：")
+    print("请选择本轮采集  类别：")
     for number, label in shape_labels.items():
         print(f"  {number}: {label}")
     while True:
@@ -81,7 +102,8 @@ if __name__ == '__main__':
         print("输入无效，请输入 1、2、3 。")
 
     # 验证集与训练集分开存放；类别目录不存在时自动创建。
-    save_dir = Path("results") / dataset_folder / shape_label
+    # 输出目录固定相对于脚本位置，避免 PyCharm 工作目录变化导致图片保存到别处。
+    save_dir = BASE_DIR / "results" / dataset_folder / shape_label
     save_dir.mkdir(parents=True, exist_ok=True)
     print(f"本轮{dataset_name}数据将保存到：{save_dir.resolve()}")
     print("按 s 保存当前帧，按 q 退出。")
@@ -101,38 +123,53 @@ if __name__ == '__main__':
         current_display_map, current_contour = clean_height_map_for_display(raw_height_map)
 
         if current_contour is None:
-            # 松开硬币/没有有效接触时清空历史，避免上一帧形状残留成拖影。
+            # 松开物体/没有有效接触时清空历史，避免上一帧形状残留成拖影。
             display_height_history.clear()
             display_height_map = current_display_map
-            coin_contour = None
+            contact_contour = None
         else:
             display_height_history.append(current_display_map)
             # 时间中值只保留多帧持续存在的起伏，可抑制瞬时亮点和轮廓跳动。
             temporal_map = np.median(
                 np.stack(tuple(display_height_history), axis=0), axis=0
             ).astype(np.float32)
-            display_height_map, coin_contour = clean_height_map_for_display(temporal_map)
+            display_height_map, contact_contour = clean_height_map_for_display(temporal_map)
 
         depth_map = sensor.height_map_2_depth_map(display_height_map)
         depth_map_with_contour = cv2.cvtColor(depth_map, cv2.COLOR_GRAY2BGR)
-        if coin_contour is not None:
+        if contact_contour is not None:
             # 在二维深度图上用红线标出最大接触轮廓。
-            cv2.drawContours(depth_map_with_contour, [coin_contour], -1, (0, 0, 255), 1)
+            cv2.drawContours(depth_map_with_contour, [contact_contour], -1, (0, 0, 255), 1)
         cv2.imshow('DepthMap', depth_map_with_contour)
 
         raw_height_map_expanded = sensor.expand_image(raw_height_map)
         display_height_map_expanded = sensor.expand_image(display_height_map)
         key = cv2.waitKey(1)
 
-        # 按 s 保存当前帧：灰度图、显示用深度图，以及可供后续分析的高度矩阵。
+        # 按 s 保存当前帧：原始灰度图、未标注深度图、窗口显示图和训练用原始高度矩阵。
         # 请在 RawImage_GRAY 或 DepthMap 窗口获得焦点时按 s。
         if key == ord('s'):
             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
-            cv2.imwrite(str(save_dir / f"{timestamp}_gray.png"), img_GRAY)
-            cv2.imwrite(str(save_dir / f"{timestamp}_depth.png"), depth_map_with_contour)
-            # .npy 仍保存未经本次显示去噪的原始高度图，保持后续分析/训练输入。
-            np.save(save_dir / f"{timestamp}_height.npy", raw_height_map_expanded)
+            gray_path = save_dir / f"{timestamp}_gray.png"
+            depth_path = save_dir / f"{timestamp}_depth.png"
+            depth_plain_path = save_dir / f"{timestamp}_depth_plain.png"
+            height_path = save_dir / f"{timestamp}_height.npy"
+            try:
+                # _depth.png 与窗口一致（含红色轮廓）；_depth_plain.png 不含轮廓，便于看原始深度显示。
+                save_png(gray_path, img_GRAY)
+                save_png(depth_path, depth_map_with_contour)
+                save_png(depth_plain_path, depth_map)
+                # 训练输入仍使用未做显示去噪的原始高度矩阵。
+                np.save(height_path, raw_height_map_expanded)
+            except (OSError, cv2.error) as error:
+                print(f"样本保存失败：{error}")
+                continue
+
             print(f"已保存{dataset_name}类别“{shape_label}”样本：{timestamp}")
+            print(f"  灰度图：{gray_path}")
+            print(f"  深度图：{depth_path}")
+            print(f"  无轮廓深度图：{depth_plain_path}")
+            print(f"  高度矩阵：{height_path}")
 
         # 按 q 退出程序。
         if key == ord('q'):

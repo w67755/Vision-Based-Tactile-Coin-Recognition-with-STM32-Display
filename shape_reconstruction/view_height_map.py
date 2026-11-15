@@ -6,13 +6,13 @@ from pathlib import Path
 import cv2
 import numpy as np
 
-# 递归查找验证集各面额目录中的高度矩阵。
+# 递归查找验证集各形状类别目录中的高度矩阵。
 data_dir = Path(__file__).resolve().parent / "results" / "shape_validation"
 height_files = sorted(data_dir.rglob("*.npy"), key=lambda path: path.stat().st_mtime)
 if not height_files:
     raise FileNotFoundError(
         f"没有在验证集目录找到 .npy 文件：{data_dir}\n"
-        "请确认数据已保存到 results/shape_validation/ 面额子文件夹中。"
+        "请确认数据已保存到 results/shape_validation/ 形状类别子文件夹中。"
     )
 
 # 先扫描所有样本，求整个验证集共享的最小/最大高度。

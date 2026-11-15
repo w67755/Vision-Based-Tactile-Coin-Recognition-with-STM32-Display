@@ -2,7 +2,7 @@
 #include "Serial.h"
 
 
-uint8_t Serial_RxFlag = 0;
+volatile uint8_t Serial_RxFlag = 0;
 char Serial_RxPacket[RX_PACKET_SIZE];
 
 

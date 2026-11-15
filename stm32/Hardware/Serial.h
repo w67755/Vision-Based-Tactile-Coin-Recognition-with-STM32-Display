@@ -3,7 +3,7 @@
 
 #define RX_PACKET_SIZE 32
 
-extern  uint8_t Serial_RxFlag;
+extern volatile uint8_t Serial_RxFlag;
 extern char Serial_RxPacket[RX_PACKET_SIZE];
 
 
